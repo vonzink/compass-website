@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Hanken_Grotesk } from "next/font/google";
+import localFont from "next/font/local";
 import { Analytics } from "@vercel/analytics/next";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import "./globals.css";
@@ -7,9 +7,9 @@ import { GhlChat } from "@/components/integrations/GhlChat";
 import { TenantTheme } from "@/components/theme/TenantTheme";
 import { getTenantConfig, getTenantOrigin } from "@/server/tenant/config";
 
-const hanken = Hanken_Grotesk({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700", "800"],
+const hanken = localFont({
+  src: "./fonts/hanken-grotesk-latin-variable.woff2",
+  weight: "400 800",
   variable: "--font-hanken",
   display: "swap",
 });
