@@ -1,0 +1,469 @@
+// Mortgage marketing platform data model - Postgres via Prisma.
+// System-of-record for leads/applications; GHL (Go High Level) is a
+// best-effort downstream sync. Table names are snake_case via @@map so the
+// physical schema stays idiomatic regardless of Prisma's model casing.
+
+// Prisma 7: connection URLs (DATABASE_URL / DIRECT_URL) live in
+// prisma.config.ts, NOT here. The datasource block only declares the provider;
+// the runtime client connects via a driver adapter (see src/lib/db.ts).
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ---------------------------------------------------------------------------
+// Multi-tenancy
+// ---------------------------------------------------------------------------
+
+/// A tenant (mortgage company) on the platform. MSFG is tenant #1
+/// (slug "msfg", deterministic id "tenant_msfg"). Every tenant-owned row
+/// carries a `tenantId`; queries are auto-scoped by the tenant Prisma
+/// extension (see src/server/tenant/scoping.ts). Resolved per request from
+/// TENANT_SLUG (dedicated mode) or the request host (shared mode).
+model Tenant {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  name      String
+  domains   String[] @default([])
+  status    String   @default("active")
+  /// Per-tenant config (brand/theme/contact/legal/seo/marketing/features),
+  /// validated by TenantConfigSchema (src/content/site.ts). Nullable so the
+  /// resolver falls back to DEFAULT_TENANT_CONFIG when absent.
+  config    Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("tenants")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+/// Loan-program category. `equity` content maps here as EQUITY.
+enum Category {
+  BUY
+  REFI
+  EQUITY
+}
+
+/// Apply-flow intent. Wizard sends lowercase buy/refi/cash; stored uppercase.
+enum Intent {
+  BUY
+  REFI
+  CASH
+}
+
+/// Rate-table segment (purchase vs refinance tab).
+enum RateSegment {
+  PURCHASE
+  REFINANCE
+}
+
+/// Downstream CRM sync state for leads/applications.
+enum SyncStatus {
+  PENDING
+  SYNCED
+  FAILED
+  SKIPPED
+}
+
+// ---------------------------------------------------------------------------
+// Marketing content (seeded from src/content/*)
+// ---------------------------------------------------------------------------
+
+/// A licensed loan officer shown in the /loan-officers directory.
+model LoanOfficer {
+  id             String   @id @default(cuid())
+  tenantId       String
+  name           String
+  title          String?
+  nmls           String
+  email          String?
+  phone          String?
+  city           String?
+  state          String?
+  licensedStates String[] @default([])
+  bio            String[] @default([])
+  photoUrl       String?
+  applyUrl       String?
+  scheduleUrl    String?
+  ghlContactId   String?
+  sortOrder      Int      @default(0)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([tenantId, nmls])
+  @@index([tenantId])
+  @@map("loan_officers")
+}
+
+/// A loan-program card (e.g. Conventional, FHA, HELOC) per category.
+model LoanProgram {
+  id        String   @id @default(cuid())
+  tenantId  String
+  category  Category
+  name      String
+  blurb     String
+  bestFor   String?
+  badge     String?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, category, name])
+  @@index([tenantId])
+  @@map("loan_programs")
+}
+
+/// A single row in the "today's rates" table.
+model RateRow {
+  id          String      @id @default(cuid())
+  tenantId    String
+  segment     RateSegment
+  product     String
+  subLabel    String?
+  rate        Decimal     @db.Decimal(6, 3)
+  apr         Decimal     @db.Decimal(6, 3)
+  points      Decimal     @db.Decimal(6, 3)
+  applyIntent Intent
+  termMonths  Int         @default(360)
+  effectiveAt DateTime    @default(now())
+  sortOrder   Int         @default(0)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@unique([tenantId, segment, product, subLabel])
+  @@index([tenantId])
+  @@map("rate_rows")
+}
+
+/// A customer testimonial / review surfaced across the site.
+model Testimonial {
+  id        String   @id @default(cuid())
+  tenantId  String
+  author    String
+  quote     String
+  context   String?
+  rating    Int      @default(5)
+  surface   String?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@map("testimonials")
+}
+
+// ---------------------------------------------------------------------------
+// Lead pipeline
+// ---------------------------------------------------------------------------
+
+/// A captured lead. System-of-record; mirrored to GHL best-effort.
+model Lead {
+  id               String     @id @default(cuid())
+  tenantId         String
+  firstName        String
+  lastName         String
+  email            String
+  phone            String
+  intent           Intent
+  source           String     @default("web")
+  location         String?
+  answers          Json
+  consentTcpa      Boolean    @default(false)
+  consentAt        DateTime?
+  ghlContactId     String?
+  ghlOpportunityId String?
+  syncStatus       SyncStatus @default(PENDING)
+  syncAttempts     Int        @default(0)
+  syncError        String?
+  /// Last CRM-side status mirrored back via an inbound GHL webhook (e.g. an
+  /// opportunity pipeline status like "open"/"won"/"lost", or a contact
+  /// lifecycle label). Null until GHL pushes an update for this lead.
+  crmStatus        String?
+  /// Pipeline-stage id GHL last reported for this lead's opportunity (inbound).
+  crmStageId       String?
+  /// Cognito `sub` of the user, when the lead was captured (or later linked) in
+  /// a signed-in session. Null for anonymous leads / auth unconfigured.
+  cognitoSub       String?
+  idempotencyKey   String
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId])
+  @@index([syncStatus])
+  @@index([ghlContactId])
+  @@index([ghlOpportunityId])
+  @@index([cognitoSub])
+  @@map("leads")
+}
+
+/// A multi-step application (future LOS hand-off). Steps cascade-delete.
+model Application {
+  id               String            @id @default(cuid())
+  tenantId         String
+  intent           Intent
+  status           String            @default("started")
+  contact          Json
+  leadId           String?
+  /// Cognito `sub` of the signed-in applicant who completed this application
+  /// (links the local record to the SSO identity / LOS user). Null for
+  /// applications captured before sign-in or with auth unconfigured.
+  cognitoSub       String?
+  ghlOpportunityId String?
+  syncStatus       SyncStatus        @default(PENDING)
+  idempotencyKey   String
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  steps            ApplicationStep[]
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId])
+  @@index([cognitoSub])
+  @@map("applications")
+}
+
+/// An individual answered step within an Application.
+model ApplicationStep {
+  id            String      @id @default(cuid())
+  tenantId      String
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  stepKey       String
+  stepType      String
+  value         Json
+  orderIndex    Int
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([tenantId])
+  @@index([applicationId])
+  @@map("application_steps")
+}
+
+// ---------------------------------------------------------------------------
+// Inbound webhooks (Phase 3 scaffold)
+// ---------------------------------------------------------------------------
+
+/// An idempotent record of an inbound webhook delivery.
+model WebhookEvent {
+  id             String    @id @default(cuid())
+  tenantId       String
+  provider       String
+  eventType      String?
+  externalId     String?
+  signatureOk    Boolean   @default(false)
+  idempotencyKey String    @unique
+  payload        Json
+  receivedAt     DateTime  @default(now())
+  processedAt    DateTime?
+
+  @@index([tenantId])
+  @@index([provider])
+  @@map("webhook_events")
+}
+
+// ---------------------------------------------------------------------------
+// AI assistant transcripts (chat recording — quality & compliance)
+// ---------------------------------------------------------------------------
+
+/// One homepage-assistant conversation. `leadId` links to a Lead if the chat
+/// captured one (via the capture_lead tool). Persistence is best-effort — the
+/// chat never blocks on a DB write.
+model ChatSession {
+  id        String        @id @default(cuid())
+  tenantId  String
+  leadId    String?
+  metadata  Json?
+  messages  ChatMessage[]
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([tenantId])
+  @@index([leadId])
+  @@map("chat_sessions")
+}
+
+/// A single recorded turn within a ChatSession. `role` is "user" | "assistant"
+/// | "tool"; `toolName` is set on tool-call rows. `orderIndex` preserves order.
+model ChatMessage {
+  id            String      @id @default(cuid())
+  tenantId      String
+  chatSessionId String
+  chatSession   ChatSession @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
+  role          String
+  content       String      @db.Text
+  toolName      String?
+  orderIndex    Int
+  createdAt     DateTime    @default(now())
+
+  @@index([tenantId])
+  @@index([chatSessionId])
+  @@map("chat_messages")
+}
+
+// ---------------------------------------------------------------------------
+// Public partner API keys (Phase 5) — OPTIONAL, DB-backed alternative/addition
+// to env MSFG_API_KEYS. The validator (src/server/api/auth.ts) checks env keys
+// first, then these rows. Only the sha256 hash of the key is stored (never the
+// raw key). `secret` (when set) enables HMAC on write endpoints for this key.
+// ---------------------------------------------------------------------------
+
+/// An issued API key for the public partner API.
+model ApiKey {
+  id         String    @id @default(cuid())
+  tenantId   String
+  /// Human-readable label (e.g. partner/integration name).
+  name       String
+  /// sha256(rawKey) as lowercase hex — the raw key is shown once at mint time.
+  keyHash    String    @unique
+  /// Optional per-key HMAC secret; presence enables x-signature enforcement.
+  secret     String?
+  /// Coarse scopes for future authorization (unused by current endpoints).
+  scopes     String[]
+  /// Soft on/off switch — inactive keys never authenticate.
+  active     Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  /// Best-effort last-use timestamp, touched on a successful auth.
+  lastUsedAt DateTime?
+
+  @@index([tenantId])
+  @@index([active])
+  @@map("api_keys")
+}
+
+// ---------------------------------------------------------------------------
+// Per-tenant encrypted secrets (Phase C)
+// ---------------------------------------------------------------------------
+
+/// AES-256-GCM envelope-encrypted secret stored per tenant.
+/// `ciphertext`, `iv`, and `authTag` are base64 strings; only the
+/// EnvelopeAesSecretStore (master key in env) can decrypt them.
+model TenantSecret {
+  id         String   @id @default(cuid())
+  tenantId   String
+  name       String
+  ciphertext String
+  iv         String
+  authTag    String
+  keyVersion Int      @default(1)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("tenant_secrets")
+}
+
+// ---------------------------------------------------------------------------
+// CMS / versioning (Phase 0)
+// ---------------------------------------------------------------------------
+
+enum AdminRole {
+  OWNER
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+enum RevisionState {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum EditableKind {
+  CONFIG
+  PAGE_SEO
+  REDIRECTS
+  NAV
+  OFFICER
+  RATE
+  TESTIMONIAL
+  PROGRAM
+}
+
+/// A global platform identity for admin users. NOT tenant-scoped; a person
+/// may hold Membership in multiple tenants. Keyed by Cognito sub.
+model AdminUser {
+  id              String       @id @default(cuid())
+  cognitoSub      String       @unique
+  email           String
+  name            String
+  isPlatformAdmin Boolean      @default(false)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  memberships     Membership[]
+
+  @@map("admin_users")
+}
+
+/// A tenant-scoped role grant linking an AdminUser to a Tenant.
+/// Accessed via the versioning service with explicit tenantId — NOT in
+/// TENANT_SCOPED_MODELS (base client, explicit filter).
+model Membership {
+  id        String    @id @default(cuid())
+  userId    String
+  tenantId  String
+  role      AdminRole
+  createdAt DateTime  @default(now())
+  user      AdminUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tenantId])
+  @@index([tenantId])
+  @@map("memberships")
+}
+
+/// A named piece of versioned content within a tenant (e.g. CONFIG/default).
+model Editable {
+  id        String       @id @default(cuid())
+  tenantId  String
+  kind      EditableKind
+  key       String
+  createdAt DateTime     @default(now())
+  revisions Revision[]
+
+  @@unique([tenantId, kind, key])
+  @@index([tenantId])
+  @@map("editables")
+}
+
+/// An immutable snapshot of an Editable at a given version.
+model Revision {
+  id          String        @id @default(cuid())
+  tenantId    String
+  editableId  String
+  version     Int
+  state       RevisionState @default(DRAFT)
+  data        Json
+  authorId    String?
+  note        String?
+  createdAt   DateTime      @default(now())
+  publishedAt DateTime?
+  editable    Editable      @relation(fields: [editableId], references: [id], onDelete: Cascade)
+
+  @@unique([editableId, version])
+  @@index([tenantId])
+  @@index([editableId, state])
+  @@map("revisions")
+}
+
+/// Immutable audit trail for admin actions within a tenant.
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String?
+  action     String
+  editableId String?
+  meta       Json?
+  at         DateTime @default(now())
+
+  @@index([tenantId, at])
+  @@map("audit_logs")
+}

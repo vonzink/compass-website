@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+      DIRECT_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_SITE_URL: https://compasshl.us
+          NEXT_PUBLIC_SITE_ENV: production
+          TENANT_MODE: dedicated
+          TENANT_SLUG: compass
