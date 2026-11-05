@@ -1,0 +1,479 @@
+/**
+ * Tenant configuration — schema, Compass defaults, and derive-helpers.
+ *
+ * Phase B: this module stops being the live source of truth. It now exports the
+ * shape (`TenantConfigSchema`), Compass seed/default values (`DEFAULT_TENANT_CONFIG`,
+ * identical to the pre-Phase-B hardcoded values), and the pure helpers that derive
+ * the legal disclosure strings. Live values come from the resolved tenant via
+ * `getTenantConfig()` (src/server/tenant/config.ts).
+ *
+ * A backward-compat `SITE`/string shim is kept for the not-yet-migrated importers
+ * (env, auth routes, openapi, ai-chat); those move to config in later phases.
+ *
+ * Values marked [PLACEHOLDER] must be replaced with verified company data before the
+ * apex (production) launch.
+ */
+import { z } from "zod";
+import { TEXAS_CONSUMER_NOTICE } from "@/content/legal/texasNotice";
+
+// ---------------------------------------------------------------------------
+// Schema
+// ---------------------------------------------------------------------------
+
+const StateSchema = z.object({
+  code: z.string(),
+  name: z.string(),
+  /** State mortgage license name/number. [PLACEHOLDER] until real data lands. */
+  licenseNumber: z.string().optional(),
+});
+
+const BrandSchema = z.object({
+  shortName: z.string(),
+  legalName: z.string(),
+  foundedYear: z.number().int(),
+  /** Display name of the tenant's AI assistant (e.g. "MSFG AI"). Named where
+   *  the assistant is referenced in UI + the derived legal strip. */
+  assistantName: z.string(),
+  logos: z.object({
+    horizontal: z.string(),
+    white: z.string(),
+    mark: z.string(),
+  }),
+});
+
+/**
+ * Theme tokens. Every field is optional and defaults to MSFG's value, so a
+ * partial config still renders. Field names map 1:1 to the CSS variables in
+ * src/app/globals.css `@theme` (see src/components/theme/tenantThemeCss.ts).
+ *
+ * SECURITY: theme values are admin-editable (the /admin config editor) and get
+ * concatenated into a <style> injected via dangerouslySetInnerHTML. They are
+ * restricted to a safe CSS-value allowlist so a value can't break out of the
+ * style context (`</style>…`) or inject extra declarations/rules (`;`, `}`).
+ */
+const SAFE_CSS_VALUE = /^[#a-zA-Z0-9(),.%\s_'"-]+$/;
+/** A theme token: a CSS value restricted to the safe-character allowlist. */
+const cssValue = (def: string) =>
+  z.string().regex(SAFE_CSS_VALUE, "unsafe CSS value").default(def);
+
+const ThemeSchema = z.object({
+  // Deep emerald system
+  green900: cssValue("#07271e"),
+  green850: cssValue("#0a3329"),
+  green800: cssValue("#0b3d30"),
+  green700: cssValue("#0e4a39"),
+  green600: cssValue("#135e48"),
+  greenGlow: cssValue("#1d7a55"),
+  // Action green
+  spring: cssValue("#1fb463"),
+  spring2: cssValue("#18a359"),
+  spring3: cssValue("#34d17e"),
+  springSoft: cssValue("rgba(31, 180, 99, 0.14)"),
+  // Headline accent
+  mint: cssValue("#7fe3a8"),
+  // Neutrals
+  ink: cssValue("#0b231c"),
+  paper: cssValue("#fbfbf7"),
+  paper2: cssValue("#f2f4ef"),
+  muted: cssValue("#5a6b61"),
+  line: cssValue("#e2e6dd"),
+  // On-dark text + hairlines
+  onDark: cssValue("rgba(255, 255, 255, 0.92)"),
+  onDark2: cssValue("rgba(255, 255, 255, 0.62)"),
+  onDark3: cssValue("rgba(255, 255, 255, 0.4)"),
+  hairDark: cssValue("rgba(255, 255, 255, 0.12)"),
+  // Radii
+  radiusSm: cssValue("6px"),
+  radiusMd: cssValue("9px"),
+  radiusLg: cssValue("12px"),
+  radiusXl: cssValue("16px"),
+  // Non-utility tokens
+  lip: cssValue("#0c6b39"),
+  fontFamily: cssValue('var(--font-hanken), system-ui, -apple-system, "Segoe UI", sans-serif'),
+});
+
+/** Apply-funnel finish-step off-ramp. Additive + fully defaulted so a published
+ *  CMS revision that predates these fields still parses to the MSFG defaults
+ *  (no re-publish required for prod to render the screen). */
+const ApplyOffRampSchema = z.object({
+  channels: z
+    .array(z.enum(["call", "text", "email"]))
+    .default(["call", "text", "email"]),
+  slaCopy: z.string().default("within ~15 minutes"),
+  finishScreen: z.enum(["rendered", "autoRedirect"]).default("rendered"),
+});
+
+const ContactSchema = z.object({
+  phoneDisplay: z.string(),
+  phoneHref: z.string(),
+  email: z.string(),
+  nmls: z.string(),
+  nmlsConsumerAccessUrl: z.string(),
+});
+
+const LegalSchema = z.object({
+  states: z.array(StateSchema),
+  texasNotice: z.string(),
+  ratesDisclaimer: z.string(),
+  /** Registered office address for legal pages. [PLACEHOLDER] until provided. */
+  address: z.string().optional(),
+  /** Distinct privacy/compliance contact; pages fall back to contact.email. */
+  privacyEmail: z.string().optional(),
+  /** Per-doc "last updated" strings, keyed by route slug (e.g. "terms"). */
+  effectiveDates: z.record(z.string(), z.string()).optional(),
+});
+
+const SeoSchema = z.object({
+  titleDefault: z.string(),
+  titleTemplate: z.string(),
+  description: z.string(),
+  ogTitle: z.string(),
+  ogDescription: z.string(),
+  siteName: z.string(),
+  ogImage: z.string().optional(),
+  keywords: z.array(z.string()).optional(),
+  /** JSON-LD LocalBusiness description (distinct from the meta description). */
+  orgDescription: z.string(),
+  /** Languages the business operates in (schema.org knowsLanguage). */
+  knowsLanguage: z.array(z.string()),
+});
+
+const StatSchema = z.object({ num: z.string(), label: z.string() });
+const FamilyCardSchema = z.object({
+  rest: z.string(),
+  href: z.string(),
+  desc: z.string(),
+});
+const FooterFamilySchema = z.object({ rest: z.string(), desc: z.string() });
+
+/** A customer testimonial shown in the apply flow (ChoiceStep "Review"). */
+const TestimonialSchema = z.object({
+  /** Customer display names, e.g. "Drew & Anya". */
+  names: z.string(),
+  /** Star rating, 1–5. */
+  rating: z.number().int().min(1).max(5),
+});
+export type Testimonial = z.infer<typeof TestimonialSchema>;
+
+const MarketingSchema = z.object({
+  tagline: z.string(),
+  stats: z.array(StatSchema),
+  familyOfCompanies: z.array(FamilyCardSchema),
+  footerFamily: z.array(FooterFamilySchema),
+  /** Apply-flow social proof. Empty array → no testimonial is shown. */
+  testimonials: z.array(TestimonialSchema),
+});
+
+const FeaturesSchema = z.object({
+  showFamily: z.boolean(),
+  ghlChat: z.boolean(),
+  aiAssistant: z.boolean(),
+  /** Show the AI composer and mode switch in the homepage hero. */
+  heroAiMode: z.boolean().default(false),
+  /** Show floating and contextual Ask AI chat entry points. */
+  askAiChat: z.boolean().default(false),
+  /** Expose rates links in the desktop and mobile primary navigation. */
+  ratesNavigation: z.boolean().default(false),
+});
+
+const AiConfigSchema = z.object({
+  provider: z.enum(["openai-compatible", "anthropic"]),
+  model: z.string(),
+  baseUrl: z.string().optional(),
+  /**
+   * External Mortgage Brain (RAG answer service). When `enabled` and a `baseUrl`
+   * is set, the marketing chat routes questions to the brain and renders its
+   * answer verbatim. Disabled by default — backward-compatible with stored
+   * configs saved before this field existed.
+   */
+  brain: z
+    .object({
+      enabled: z.boolean().default(false),
+      baseUrl: z.string().default(""),
+    })
+    .default({ enabled: false, baseUrl: "" }),
+});
+
+export const TenantConfigSchema = z.object({
+  brand: BrandSchema,
+  // Lazy default: when `theme` is omitted, fill all sub-fields with their
+  // individual Zod defaults (Zod v4 does not recursively apply sub-defaults
+  // when the outer `.default` value is a plain `{}`).
+  theme: ThemeSchema.default(() => ThemeSchema.parse({})),
+  contact: ContactSchema,
+  legal: LegalSchema,
+  seo: SeoSchema,
+  marketing: MarketingSchema.optional(),
+  features: FeaturesSchema,
+  ai: AiConfigSchema,
+  applyOffRamp: ApplyOffRampSchema.default(() => ApplyOffRampSchema.parse({})),
+});
+
+export type TenantConfig = z.infer<typeof TenantConfigSchema>;
+
+// ---------------------------------------------------------------------------
+// Compass defaults
+// ---------------------------------------------------------------------------
+
+/**
+ * Compass config — the Zod default/fallback and seed source (prisma/seed.ts).
+ * `ThemeSchema.parse({})` materializes every token default so DEFAULT carries an
+ * explicit theme (used by `<TenantTheme>`).
+ */
+export const DEFAULT_TENANT_CONFIG: TenantConfig = {
+  brand: {
+    shortName: "Compass Home Loans",
+    legalName: "Mountain State Financial Group, LLC",
+    foundedYear: 2015,
+    assistantName: "Compass Assistant",
+    logos: {
+      horizontal: "/brand/compass-horizontal.webp",
+      white: "/brand/compass-horizontal.webp",
+      mark: "/brand/compass-mark.webp",
+    },
+  },
+  theme: {
+    ...ThemeSchema.parse({}),
+    green900: "#082d2b",
+    green850: "#0b3b39",
+    green800: "#0f4b48",
+    green700: "#145b56",
+    green600: "#1a6861",
+    greenGlow: "#4f8f72",
+    spring: "#8bc53f",
+    spring2: "#76ad30",
+    spring3: "#a1d65f",
+    springSoft: "rgba(139, 197, 63, 0.16)",
+    mint: "#c8ec99",
+    ink: "#14302e",
+    paper: "#fbfcf9",
+    paper2: "#f1f4ef",
+    muted: "#5c6b68",
+    line: "#dfe5de",
+    lip: "#5f9821",
+  },
+  contact: {
+    phoneDisplay: "218-820-7321",
+    phoneHref: "tel:+12188207321",
+    email: "William.Provost@CompassHL.us",
+    nmls: "1314257",
+    nmlsConsumerAccessUrl: "https://www.nmlsconsumeraccess.org/EntityDetails.aspx/COMPANY/1314257",
+  },
+  legal: {
+    states: [
+      { code: "CO", name: "Colorado", licenseNumber: "[PLACEHOLDER]" },
+      { code: "ND", name: "North Dakota", licenseNumber: "[PLACEHOLDER]" },
+      { code: "SD", name: "South Dakota", licenseNumber: "[PLACEHOLDER]" },
+      { code: "MN", name: "Minnesota", licenseNumber: "[PLACEHOLDER]" },
+      { code: "TX", name: "Texas", licenseNumber: "[PLACEHOLDER]" },
+      { code: "MI", name: "Michigan", licenseNumber: "[PLACEHOLDER]" },
+      { code: "IN", name: "Indiana", licenseNumber: "[PLACEHOLDER]" },
+    ],
+    texasNotice: TEXAS_CONSUMER_NOTICE,
+    ratesDisclaimer:
+      "Rates shown are indicative, assume a 740+ FICO score, a $300,000 loan on a single-family primary residence, and are not a commitment to lend. Your actual rate depends on your credit, property, loan amount, and a complete application. Rates and points are subject to change without notice.",
+    address: "1630 1st Ave N Ste B, Fargo, ND 58102",
+  },
+  seo: {
+    titleDefault: "Compass Home Loans — Clear, Precise Mortgage Guidance",
+    titleTemplate: "%s · Compass Home Loans",
+    description:
+      "Compass Home Loans provides precise mortgage guidance, clear communication, and responsive service from pre-approval through funding.",
+    ogTitle: "Compass Home Loans — Clear, Precise Mortgage Guidance",
+    ogDescription:
+      "Residential mortgage guidance centered on precision, communication, and a predictable closing experience.",
+    siteName: "Compass Home Loans",
+    orgDescription:
+      "Compass Home Loans is a residential mortgage brand of Mountain State Financial Group, LLC, serving borrowers with clear guidance and responsive support.",
+    knowsLanguage: ["en"],
+  },
+  marketing: {
+    tagline:
+      "Precise mortgage guidance and clear communication from pre-approval through funding.",
+    stats: [
+      { num: "$1.4B+", label: "funded loans" },
+      { num: "4,200+", label: "families served" },
+      { num: "21 days", label: "avg. close time" },
+    ],
+    familyOfCompanies: [
+      {
+        rest: "Mortgage",
+        href: "/buy",
+        desc: "Conventional, FHA, VA, jumbo, and first-time buyer loans with expert guidance from application to closing.",
+      },
+      {
+        rest: "Veterans",
+        href: "/veterans",
+        desc: "VA purchase, refinance, and benefit-focused lending options built for veterans, active-duty military, and eligible surviving spouses.",
+      },
+      {
+        rest: "Reverse",
+        href: "/reverse",
+        desc: "Reverse mortgage guidance for homeowners 62+ who want to access home equity while staying in their home.",
+      },
+      {
+        rest: "Investment",
+        href: "/investment",
+        desc: "Financing options for rental properties, DSCR loans, second homes, and real estate investors building long-term wealth.",
+      },
+      {
+        rest: "Commercial",
+        href: "/commercial",
+        desc: "Commercial lending solutions for business properties, mixed-use buildings, multifamily, and investor-owned real estate.",
+      },
+      {
+        rest: "Equity",
+        href: "/home-equity",
+        desc: "Home equity lending options including HELOCs, second mortgages, and cash-out refinances to help homeowners access the equity they’ve built.",
+      },
+    ],
+    footerFamily: [
+      {
+        rest: "Mortgage",
+        desc: "Conventional, FHA, VA, jumbo, and first-time buyer loans with expert guidance.",
+      },
+      {
+        rest: "Veterans",
+        desc: "VA lending built for veterans, active-duty military, and eligible surviving spouses.",
+      },
+      {
+        rest: "Reverse",
+        desc: "Reverse mortgage guidance for homeowners 62+ who want to tap equity and stay home.",
+      },
+      {
+        rest: "Investment",
+        desc: "Financing for rental properties, DSCR loans, second homes, and investors.",
+      },
+      {
+        rest: "Commercial",
+        desc: "Lending for business properties, mixed-use, multifamily, and investor-owned real estate.",
+      },
+      {
+        rest: "Equity",
+        desc: "HELOCs, second mortgages, and cash-out refinances to access the equity you’ve built.",
+      },
+    ],
+    testimonials: [],
+  },
+  features: {
+    showFamily: false,
+    ghlChat: false,
+    aiAssistant: false,
+    heroAiMode: false,
+    askAiChat: false,
+    ratesNavigation: false,
+  },
+  applyOffRamp: {
+    channels: ["call", "text", "email"],
+    slaCopy: "within ~15 minutes",
+    finishScreen: "rendered",
+  },
+  ai: {
+    provider: "openai-compatible",
+    model: "deepseek-chat",
+    baseUrl: "https://api.deepseek.com",
+    brain: { enabled: false, baseUrl: "" },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Derive-helpers (legal strings) — pure, called server-side
+// ---------------------------------------------------------------------------
+
+export type ApplyOffRampConfig = {
+  channels: ("call" | "text" | "email")[];
+  slaCopy: string;
+  finishScreen: "rendered" | "autoRedirect";
+};
+
+/** Pull the off-ramp block off a parsed tenant config. Because `ApplyOffRampSchema`
+ *  is fully defaulted, `config.applyOffRamp` is always populated — this helper just
+ *  gives the wiring layer a stable, narrowed accessor. */
+export function deriveApplyOffRamp(config: TenantConfig): ApplyOffRampConfig {
+  // A published CMS config revision (or a stale cached one) can predate this
+  // block; the schema default normally fills it, but guard against an undefined
+  // value at runtime so the finish step never crashes — fall back to MSFG defaults.
+  const off =
+    (config.applyOffRamp as ApplyOffRampConfig | undefined) ??
+    DEFAULT_TENANT_CONFIG.applyOffRamp;
+  return {
+    channels: off.channels,
+    slaCopy: off.slaCopy,
+    finishScreen: off.finishScreen,
+  };
+}
+
+/** Comma-joined licensed-state codes for disclosure copy. */
+export function statesLine(c: TenantConfig): string {
+  return c.legal.states.map((s) => s.code).join(", ");
+}
+
+/** Full footer legal strip. AI copy is omitted when the feature is hidden. */
+export function buildLegalStrip(c: TenantConfig): string {
+  const aiDisclaimer = c.features.aiAssistant
+    ? ` ${c.brand.assistantName} provides general information and estimates only and is not a commitment to lend.`
+    : "";
+  return `${c.brand.legalName}. NMLS #${c.contact.nmls}. Equal Housing Lender. Licensed in ${statesLine(c)}. Loans subject to credit and property approval. Rates and terms subject to change without notice.${aiDisclaimer} © ${c.brand.foundedYear}–2026 ${c.brand.shortName}.`;
+}
+
+/** "Last updated" string for a legal doc slug; placeholder until real dates land. */
+export function effectiveDate(c: TenantConfig, slug: string): string {
+  return c.legal.effectiveDates?.[slug] ?? "[PLACEHOLDER]";
+}
+
+/** Short marketing/automated-contact consent microcopy (TCPA). */
+export function buildConsentTcpa(c: TenantConfig): string {
+  return `By submitting, you agree that ${c.brand.shortName} and its affiliates may contact you about your inquiry by phone, text, and email — including via automated technology — at the number and address provided. Consent is not a condition of any purchase. Message and data rates may apply.`;
+}
+
+/**
+ * Apply-flow testimonial caption, e.g. "Drew & Anya, MSFG customers". The brand
+ * token is sourced from `shortName` (the customer names stay tenant content), so
+ * a config swap renames the brand without touching the names.
+ */
+export function buildTestimonialCaption(c: TenantConfig, t: Testimonial): string {
+  return `${t.names}, ${c.brand.shortName} customers`;
+}
+
+// ---------------------------------------------------------------------------
+// Backward-compat shim — for the not-yet-migrated importers (env, auth routes,
+// openapi, ai-chat). Removed once those move to config in later phases.
+// NOTE: `url`/`env` read process.env directly (NOT serverEnv) to avoid a
+// circular import — src/lib/env.ts imports this module.
+// ---------------------------------------------------------------------------
+
+const D = DEFAULT_TENANT_CONFIG;
+
+/** Legacy flat config object preserving the OLD shape for unmigrated importers. */
+export const SITE = {
+  url: process.env.NEXT_PUBLIC_SITE_URL ?? "https://compasshl.us",
+  env: process.env.NEXT_PUBLIC_SITE_ENV ?? "development",
+  legalName: D.brand.legalName,
+  shortName: D.brand.shortName,
+  foundedYear: D.brand.foundedYear,
+  nmls: D.contact.nmls,
+  nmlsConsumerAccessUrl: D.contact.nmlsConsumerAccessUrl,
+  phoneDisplay: D.contact.phoneDisplay,
+  phoneHref: D.contact.phoneHref,
+  email: D.contact.email,
+  tagline: D.marketing!.tagline,
+  states: D.legal.states,
+  stats: D.marketing!.stats,
+} as const;
+
+/** @deprecated use `statesLine(config)`. */
+export const STATES_LINE = statesLine(D);
+/** @deprecated use `buildLegalStrip(config)`. */
+export const LEGAL_STRIP = buildLegalStrip(D);
+/** @deprecated use `buildConsentTcpa(config)`. */
+export const CONSENT_TCPA = buildConsentTcpa(D);
+/** @deprecated use `config.legal.ratesDisclaimer`. */
+export const RATES_DISCLAIMER = D.legal.ratesDisclaimer;
+/** @deprecated use `config.legal.texasNotice`. */
+export const TEXAS_NOTICE = D.legal.texasNotice;
+/** @deprecated use `config.marketing.familyOfCompanies`. */
+export const FAMILY_OF_COMPANIES = D.marketing!.familyOfCompanies;
+/** @deprecated use `config.marketing.footerFamily`. */
+export const FOOTER_FAMILY = D.marketing!.footerFamily;
+
+export type FamilyCompany = (typeof FAMILY_OF_COMPANIES)[number];

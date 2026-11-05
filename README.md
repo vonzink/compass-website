@@ -1,71 +1,63 @@
-# MSFG.us — marketing website
+# Compass Home Loans Website
 
-The new public marketing site for **Mountain State Financial Group, LLC** (MSFG) — an AI-first, conversion-focused mortgage funnel. Licensed in CO · ND · SD · MN · TX · MI · IN.
-
-> Built from the design handoff in `MSFG.us.zip` (extracted to `design-reference/`, gitignored). The prototype there is the visual source of truth; this app recreates it in production Next.js. Full project plan: see the GSD plan referenced by the team.
+Public marketing website for **Compass Home Loans**, a division of Mountain State
+Financial Group, LLC.
 
 ## Stack
 
-- **Next.js 16** (App Router) · **React 19** · **TypeScript**
-- **Tailwind CSS v4** (CSS-first `@theme` tokens in `src/app/globals.css`)
-- **Prisma 7** → **PostgreSQL** (AWS RDS) via the `@prisma/adapter-pg` driver adapter
-- **Go High Level** (GHL) lead sync · **AWS Cognito** SSO (Phase 4) · **Anthropic Claude** assistant (Phase 2)
-- Hosted on **Vercel** (staging-first)
+- Next.js 16 App Router, React 19, and TypeScript
+- Tailwind CSS v4
+- Prisma 7 with PostgreSQL
+- Standalone Next.js deployment behind nginx and PM2
 
-## Getting started
-
-```bash
-npm install                 # also runs `prisma generate`
-cp .env.example .env.local  # fill in DATABASE_URL etc. (see below)
-npm run dev                 # http://localhost:3000
-```
-
-### Environment
-
-Copy `.env.example` and set, at minimum, `DATABASE_URL`. GHL lead sync stays in `SKIPPED` state until `GHL_API_TOKEN` + `GHL_LOCATION_ID` are set. See `.env.example` for the full list (`DIRECT_URL`, `GHL_*`, `CRON_SECRET`, `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_SITE_ENV`).
-
-### Database
+## Local Setup
 
 ```bash
-npm run db:migrate   # create/apply migrations against your dev DB
-npm run db:seed      # load placeholder officers / rates / programs / testimonials
-npm run db:studio    # browse + edit data
+npm ci
+cp .env.example .env
+npm run db:up
+npm run db:deploy
+npm run db:seed
+npm run dev
 ```
 
-## Scripts
+The development site runs at `http://localhost:3000`. Local Postgres is exposed
+on port `5435` by `docker-compose.dev.yml`.
 
-| Script | Purpose |
-|---|---|
-| `npm run dev` | Dev server (Turbopack) |
-| `npm run build` / `start` | Production build / serve |
-| `npm run lint` | ESLint |
-| `npm run db:migrate` / `db:deploy` | Prisma migrations (dev / prod) |
-| `npm run db:seed` | Seed placeholder content |
-| `npm run db:studio` | Prisma Studio |
+## Quality Checks
 
-## Structure
-
-```
-src/
-  app/
-    (marketing)/        # public pages (Nav + Footer layout): home, buy, refinance,
-                        #   home-equity, rates, loan-officers
-    apply/[intent]/     # the page-by-page application wizard (own chrome)
-    api/v1/             # leads, health, webhooks/[provider]  (+ api/internal/retry-ghl)
-    layout.tsx globals.css robots.ts sitemap.ts
-  components/           # ui/ (primitives), nav/, home/, category/, rates/, officers/, apply/
-  content/              # typed content + config (site, nav, categories, rates, officers, flows, ai-script)
-  lib/                  # cn, finance, db, env, schema, leads
-  server/               # leads/ (service), integrations/ghl/ (CRM client), webhooks/
-  validation/           # zod schemas
-prisma/                 # schema.prisma + seed.ts
+```bash
+npm test
+npm run lint
+NEXT_PUBLIC_SITE_URL=https://compasshl.us \
+NEXT_PUBLIC_SITE_ENV=production \
+npm run build
 ```
 
-## Status (Phase 1)
+GitHub Actions runs the same checks for pushes and pull requests.
 
-Pixel-faithful marketing site + lead capture pipeline (Postgres + GHL, idempotent, best-effort sync). AI widget is scripted; the apply account step is a UI mock. Next phases: Claude assistant + chat recording (P2), full GHL suite (P3), Cognito SSO into app.msfgco.com (P4), public API/webhook platform (P5).
+## Content
 
-**Before apex launch:** real NMLS #, loan-officer roster, rate feed, logo SVGs, GHL credentials, AWS Postgres connection, and DNS for `msfg.us`. Search the codebase for `[PLACEHOLDER]`.
+- Company and theme configuration: `src/content/site.ts`
+- Navigation: `src/content/nav.ts`
+- Loan officers: `src/content/officers.ts`
+- Global application URL: `src/content/links.ts`
+- Mortgage programs and rates: `src/content/categories.ts`, `src/content/rates.ts`
 
-See `AGENTS.md` for code conventions.
-# compass-website
+The database seed in `prisma/seed.ts` loads content from these modules. Do not add
+unapproved loan officers, rates, testimonials, licensing claims, or compliance
+language.
+
+## Production
+
+Production runs on `52.203.186.217` as PM2 process `compass-web` on loopback port
+`3009`. nginx owns the public domain route. Deployments are immutable standalone
+releases built locally from a clean commit already pushed to `origin/main`.
+
+```bash
+./deploy.sh
+```
+
+Use `./deploy.sh --migrate` only when the reviewed commit contains a new Prisma
+migration. See [DEPLOYMENT.md](DEPLOYMENT.md) for release, rollback, DNS, and TLS
+procedures.
